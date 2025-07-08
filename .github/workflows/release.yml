@@ -39,8 +39,8 @@ jobs:
       - name: Calculate new version
         id: version
         run: |
-          # Extract current version from .jucer file
-          CURRENT_VERSION=$(grep 'version=' sinT.jucer | sed 's/.*version="\([^"]*\)".*/\1/')
+          # Extract current version from .jucer file (skip XML declaration)
+          CURRENT_VERSION=$(grep 'version=' sinT.jucer | grep -v 'xml version' | sed 's/.*version="\([^"]*\)".*/\1/')
           echo "Current version: $CURRENT_VERSION"
           
           # Split version into parts
@@ -262,7 +262,7 @@ jobs:
       - name: Build for ARM
         run: |
           cd Builds/LinuxMakefile
-          make CONFIG=Release CXX=arm-linux-gnueabihf-g++ CC=arm-linux-gnueabihf-gcc
+          make CONFIG=Release CXX=arm-linux-gnueabihf-g++ CC=arm-linux-gnueabihf-gcc PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
 
       - name: Create .deb packages for ARM
         run: |
@@ -335,15 +335,32 @@ jobs:
 
       - name: Build Projucer
         run: |
-          msbuild "JUCE\extras\Projucer\Builds\VisualStudio2022\Projucer.sln" -p:Configuration=Release -p:Platform=x64
+          if (Test-Path "JUCE\extras\Projucer\Builds\VisualStudio2022\Projucer.sln") {
+            msbuild "JUCE\extras\Projucer\Builds\VisualStudio2022\Projucer.sln" -p:Configuration=Release -p:Platform=x64
+          } else {
+            Write-Error "Projucer solution file not found"
+            exit 1
+          }
 
       - name: Generate Windows project files
         run: |
-          & "JUCE\extras\Projucer\Builds\VisualStudio2022\x64\Release\App\Projucer.exe" --resave sinT.jucer
+          $projucerPath = "JUCE\extras\Projucer\Builds\VisualStudio2022\x64\Release\App\Projucer.exe"
+          if (Test-Path $projucerPath) {
+            & $projucerPath --resave sinT.jucer
+          } else {
+            Write-Error "Projucer executable not found at $projucerPath"
+            exit 1
+          }
 
       - name: Build sinT
         run: |
-          msbuild "Builds\VisualStudio2022\sinT.sln" -p:Configuration=Release -p:Platform=x64
+          $solutionPath = "Builds\VisualStudio2022\sinT.sln"
+          if (Test-Path $solutionPath) {
+            msbuild $solutionPath -p:Configuration=Release -p:Platform=x64
+          } else {
+            Write-Error "Solution file not found at $solutionPath"
+            exit 1
+          }
 
       - name: Install Inno Setup
         run: |

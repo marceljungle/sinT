@@ -31,3 +31,32 @@ sinT is a digital, polyphonic, multi-platform synthesizer. Compatible with GNU/L
     - Reverb.
  - Dual-channel output waveform visualizer.
  - Ability to save and load user and factory presets.
+
+## Automated Releases
+
+sinT features automated release builds for multiple platforms. When changes from the `develop` branch are merged into `main`, the system automatically:
+
+- Builds for Linux (x64 and ARM/Raspberry Pi), Windows, and macOS
+- Creates platform-specific packages (.deb, .exe, .dmg)
+- Generates GitHub releases with all binaries
+
+For more information, see [Release Workflow Documentation](.github/RELEASE_WORKFLOW.md).
+
+## Development
+
+### Version Management
+
+Use the included script to test version bumps locally:
+
+```bash
+./scripts/bump-version.sh [major|minor|patch]
+```
+
+### Building from Source
+
+sinT is built using JUCE 7.0.12. The automated release workflow handles all platform builds, but for local development:
+
+1. Install JUCE 7.0.12
+2. Open `sinT.jucer` in Projucer
+3. Generate platform-specific build files
+4. Build using your platform's native tools
