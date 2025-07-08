@@ -88,18 +88,19 @@ jobs:
 
       - name: Download and setup JUCE
         run: |
+          cd ..
           wget https://github.com/juce-framework/JUCE/archive/refs/tags/${{ env.JUCE_VERSION }}.tar.gz
           tar -xzf ${{ env.JUCE_VERSION }}.tar.gz
           mv JUCE-${{ env.JUCE_VERSION }} JUCE
 
       - name: Build Projucer
         run: |
-          cd JUCE/extras/Projucer/Builds/LinuxMakefile
+          cd ../JUCE/extras/Projucer/Builds/LinuxMakefile
           make CONFIG=Release
 
-      - name: Resave Project With Correct Path
+      - name: Resave Project
         run: |
-          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --set-juce-path "$GITHUB_WORKSPACE/JUCE" --resave sinT.jucer
+          ../JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer
           echo "✅ Project files generated successfully"
 
       - name: Test build (compile only, no link)
