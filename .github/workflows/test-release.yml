@@ -1,0 +1,114 @@
+name: Test Release Workflow
+
+# This workflow can be triggered manually to test the build process
+# without creating an actual release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version type to simulate'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+        - patch
+        - minor
+        - major
+      test_version:
+        description: 'Test version (e.g., 1.2.3-test)'
+        required: false
+        default: ''
+
+env:
+  JUCE_VERSION: "7.0.12"
+
+jobs:
+  test-version-calculation:
+    runs-on: ubuntu-latest
+    outputs:
+      test_version: ${{ steps.version.outputs.test_version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Calculate test version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.test_version }}" ]; then
+            TEST_VERSION="${{ github.event.inputs.test_version }}"
+          else
+            # Extract current version from .jucer file (skip XML declaration)
+            CURRENT_VERSION=$(grep 'version=' sinT.jucer | grep -v 'xml version' | sed 's/.*version="\([^"]*\)".*/\1/')
+            echo "Current version: $CURRENT_VERSION"
+            
+            # Split version into parts
+            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+            MAJOR=${VERSION_PARTS[0]}
+            MINOR=${VERSION_PARTS[1]}
+            PATCH=${VERSION_PARTS[2]}
+            
+            # Increment based on version type
+            case "${{ github.event.inputs.version_type }}" in
+              major)
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                ;;
+              minor)
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                ;;
+              patch)
+                PATCH=$((PATCH + 1))
+                ;;
+            esac
+            
+            TEST_VERSION="$MAJOR.$MINOR.$PATCH-test"
+          fi
+          
+          echo "Test version: $TEST_VERSION"
+          echo "test_version=$TEST_VERSION" >> $GITHUB_OUTPUT
+
+  test-linux-build:
+    needs: test-version-calculation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libasound2-dev libjack-jackd2-dev \
+            ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libx11-dev libxcomposite-dev \
+            libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev \
+            libxrender-dev libwebkit2gtk-4.0-dev libglu1-mesa-dev mesa-common-dev \
+            pkg-config
+
+      - name: Download and setup JUCE
+        run: |
+          wget https://github.com/juce-framework/JUCE/archive/refs/tags/${{ env.JUCE_VERSION }}.tar.gz
+          tar -xzf ${{ env.JUCE_VERSION }}.tar.gz
+          mv JUCE-${{ env.JUCE_VERSION }} JUCE
+
+      - name: Build Projucer
+        run: |
+          cd JUCE/extras/Projucer/Builds/LinuxMakefile
+          make CONFIG=Release
+
+      - name: Test project file generation
+        run: |
+          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer
+          echo "✅ Project files generated successfully"
+
+      - name: Test build (compile only, no link)
+        run: |
+          cd Builds/LinuxMakefile
+          make CONFIG=Release compile
+          echo "✅ Compilation test passed"
+
+      - name: Validate expected files exist
+        run: |
+          ls -la Builds/LinuxMakefile/
+          echo "✅ Build directory structure is correct"

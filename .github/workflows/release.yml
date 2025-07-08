@@ -1,0 +1,508 @@
+name: Automated Release Build
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+env:
+  JUCE_VERSION: "7.0.12"
+
+jobs:
+  # Check if this is a merge from develop to main and extract version tag
+  check-merge-and-version:
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'develop'
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version_type: ${{ steps.extract.outputs.version_type }}
+      new_version: ${{ steps.version.outputs.new_version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version tag from PR
+        id: extract
+        run: |
+          PR_BODY="${{ github.event.pull_request.body }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          
+          # Look for version tags in PR title or body
+          if echo "$PR_TITLE $PR_BODY" | grep -qi "major"; then
+            echo "version_type=major" >> $GITHUB_OUTPUT
+          elif echo "$PR_TITLE $PR_BODY" | grep -qi "minor"; then
+            echo "version_type=minor" >> $GITHUB_OUTPUT
+          else
+            echo "version_type=patch" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Calculate new version
+        id: version
+        run: |
+          # Extract current version from .jucer file (skip XML declaration)
+          CURRENT_VERSION=$(grep 'version=' sinT.jucer | grep -v 'xml version' | sed 's/.*version="\([^"]*\)".*/\1/')
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Split version into parts
+          IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+          MAJOR=${VERSION_PARTS[0]}
+          MINOR=${VERSION_PARTS[1]}
+          PATCH=${VERSION_PARTS[2]}
+          
+          # Increment based on version type
+          case "${{ steps.extract.outputs.version_type }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+          
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "New version: $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if should release
+        id: check
+        run: echo "should_release=true" >> $GITHUB_OUTPUT
+
+  # Update version in project files
+  update-version:
+    needs: check-merge-and-version
+    if: needs.check-merge-and-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Update version in .jucer file
+        run: |
+          NEW_VERSION="${{ needs.check-merge-and-version.outputs.new_version }}"
+          sed -i 's/version="[^"]*"/version="'$NEW_VERSION'"/' sinT.jucer
+          echo "Updated version to $NEW_VERSION in sinT.jucer"
+
+      - name: Commit version update
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add sinT.jucer
+          git commit -m "Bump version to ${{ needs.check-merge-and-version.outputs.new_version }}"
+          git push
+
+  # Build for Linux x64
+  build-linux-x64:
+    needs: [check-merge-and-version, update-version]
+    if: needs.check-merge-and-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libasound2-dev libjack-jackd2-dev \
+            ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libx11-dev libxcomposite-dev \
+            libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev \
+            libxrender-dev libwebkit2gtk-4.0-dev libglu1-mesa-dev mesa-common-dev \
+            pkg-config
+
+      - name: Download and setup JUCE
+        run: |
+          wget https://github.com/juce-framework/JUCE/archive/refs/tags/${{ env.JUCE_VERSION }}.tar.gz
+          tar -xzf ${{ env.JUCE_VERSION }}.tar.gz
+          mv JUCE-${{ env.JUCE_VERSION }} JUCE
+
+      - name: Build Projucer
+        run: |
+          cd JUCE/extras/Projucer/Builds/LinuxMakefile
+          make CONFIG=Release
+
+      - name: Generate Linux project files
+        run: |
+          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer
+
+      - name: Build standalone application
+        run: |
+          cd Builds/LinuxMakefile
+          make CONFIG=Release
+
+      - name: Create .deb packages
+        run: |
+          VERSION="${{ needs.check-merge-and-version.outputs.new_version }}"
+          
+          # Create standalone package
+          mkdir -p packaging/debian/sint-digital-synth_${VERSION}_Linux_x64/DEBIAN
+          mkdir -p packaging/debian/sint-digital-synth_${VERSION}_Linux_x64/usr/bin
+          mkdir -p packaging/debian/sint-digital-synth_${VERSION}_Linux_x64/usr/share/applications
+          
+          # Copy binary
+          cp Builds/LinuxMakefile/build/sinT packaging/debian/sint-digital-synth_${VERSION}_Linux_x64/usr/bin/
+          
+          # Create desktop file
+          cat > packaging/debian/sint-digital-synth_${VERSION}_Linux_x64/usr/share/applications/sint.desktop << EOF
+          [Desktop Entry]
+          Name=sinT Digital Synthesizer
+          Comment=Digital polyphonic synthesizer
+          Exec=/usr/bin/sinT
+          Icon=sint
+          Terminal=false
+          Type=Application
+          Categories=AudioVideo;Audio;
+          EOF
+          
+          # Create control file
+          cat > packaging/debian/sint-digital-synth_${VERSION}_Linux_x64/DEBIAN/control << EOF
+          Package: sint-digital-synth
+          Version: ${VERSION}
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Depends: libasound2, libjack-jackd2-0 | libjack0, libfreetype6, libx11-6
+          Maintainer: AlbertoNR <contact@example.com>
+          Description: sinT Digital Synthesizer
+           A digital, polyphonic, multi-platform synthesizer with VST3 plugin support.
+          EOF
+          
+          # Build package
+          dpkg-deb --build packaging/debian/sint-digital-synth_${VERSION}_Linux_x64
+          
+          # Create kiosk package (copy of standalone for now)
+          mkdir -p packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_x64/DEBIAN
+          mkdir -p packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_x64/usr/bin
+          mkdir -p packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_x64/usr/share/applications
+          
+          cp Builds/LinuxMakefile/build/sinT packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_x64/usr/bin/sinT-kiosk
+          
+          cat > packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_x64/usr/share/applications/sint-kiosk.desktop << EOF
+          [Desktop Entry]
+          Name=sinT Digital Synthesizer (Kiosk)
+          Comment=Digital polyphonic synthesizer - Kiosk Mode
+          Exec=/usr/bin/sinT-kiosk
+          Icon=sint
+          Terminal=false
+          Type=Application
+          Categories=AudioVideo;Audio;
+          EOF
+          
+          cat > packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_x64/DEBIAN/control << EOF
+          Package: sint-digital-synth-kiosk
+          Version: ${VERSION}
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Depends: libasound2, libjack-jackd2-0 | libjack0, libfreetype6, libx11-6
+          Maintainer: AlbertoNR <contact@example.com>
+          Description: sinT Digital Synthesizer (Kiosk Mode)
+           A digital, polyphonic, multi-platform synthesizer - Kiosk Mode for touchscreen systems.
+          EOF
+          
+          dpkg-deb --build packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_x64
+
+      - name: Upload Linux x64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-packages
+          path: |
+            packaging/debian/*.deb
+
+  # Build for Linux ARM (Raspberry Pi)
+  build-linux-arm:
+    needs: [check-merge-and-version, update-version]
+    if: needs.check-merge-and-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            build-essential pkg-config
+
+      - name: Install ARM dependencies
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev:armhf libfreetype6-dev:armhf \
+            libx11-dev:armhf libxcomposite-dev:armhf libxcursor-dev:armhf \
+            libxext-dev:armhf libxinerama-dev:armhf libxrandr-dev:armhf \
+            libxrender-dev:armhf
+
+      - name: Download and setup JUCE
+        run: |
+          wget https://github.com/juce-framework/JUCE/archive/refs/tags/${{ env.JUCE_VERSION }}.tar.gz
+          tar -xzf ${{ env.JUCE_VERSION }}.tar.gz
+          mv JUCE-${{ env.JUCE_VERSION }} JUCE
+
+      - name: Build Projucer (host)
+        run: |
+          cd JUCE/extras/Projucer/Builds/LinuxMakefile
+          make CONFIG=Release
+
+      - name: Generate Linux project files
+        run: |
+          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer
+
+      - name: Build for ARM
+        run: |
+          cd Builds/LinuxMakefile
+          make CONFIG=Release CXX=arm-linux-gnueabihf-g++ CC=arm-linux-gnueabihf-gcc PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
+
+      - name: Create .deb packages for ARM
+        run: |
+          VERSION="${{ needs.check-merge-and-version.outputs.new_version }}"
+          
+          # Standalone package
+          mkdir -p packaging/debian/sint-digital-synth_${VERSION}_Linux_RPi/DEBIAN
+          mkdir -p packaging/debian/sint-digital-synth_${VERSION}_Linux_RPi/usr/bin
+          cp Builds/LinuxMakefile/build/sinT packaging/debian/sint-digital-synth_${VERSION}_Linux_RPi/usr/bin/
+          
+          cat > packaging/debian/sint-digital-synth_${VERSION}_Linux_RPi/DEBIAN/control << EOF
+          Package: sint-digital-synth
+          Version: ${VERSION}
+          Section: sound
+          Priority: optional
+          Architecture: armhf
+          Depends: libasound2, libfreetype6, libx11-6
+          Maintainer: AlbertoNR <contact@example.com>
+          Description: sinT Digital Synthesizer
+           A digital, polyphonic, multi-platform synthesizer with VST3 plugin support.
+          EOF
+          
+          dpkg-deb --build packaging/debian/sint-digital-synth_${VERSION}_Linux_RPi
+          
+          # Kiosk package
+          mkdir -p packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_RPi/DEBIAN
+          mkdir -p packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_RPi/usr/bin
+          cp Builds/LinuxMakefile/build/sinT packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_RPi/usr/bin/sinT-kiosk
+          
+          cat > packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_RPi/DEBIAN/control << EOF
+          Package: sint-digital-synth-kiosk
+          Version: ${VERSION}
+          Section: sound
+          Priority: optional
+          Architecture: armhf
+          Depends: libasound2, libfreetype6, libx11-6
+          Maintainer: AlbertoNR <contact@example.com>
+          Description: sinT Digital Synthesizer (Kiosk Mode)
+           A digital, polyphonic, multi-platform synthesizer - Kiosk Mode for touchscreen systems.
+          EOF
+          
+          dpkg-deb --build packaging/debian/sint-digital-synth-kiosk_${VERSION}_Linux_RPi
+
+      - name: Upload Linux ARM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm-packages
+          path: |
+            packaging/debian/*.deb
+
+  # Build for Windows
+  build-windows:
+    needs: [check-merge-and-version, update-version]
+    if: needs.check-merge-and-version.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Download and setup JUCE
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/juce-framework/JUCE/archive/refs/tags/${{ env.JUCE_VERSION }}.zip" -OutFile "juce.zip"
+          Expand-Archive -Path "juce.zip" -DestinationPath "."
+          Rename-Item -Path "JUCE-${{ env.JUCE_VERSION }}" -NewName "JUCE"
+
+      - name: Build Projucer
+        run: |
+          if (Test-Path "JUCE\extras\Projucer\Builds\VisualStudio2022\Projucer.sln") {
+            msbuild "JUCE\extras\Projucer\Builds\VisualStudio2022\Projucer.sln" -p:Configuration=Release -p:Platform=x64
+          } else {
+            Write-Error "Projucer solution file not found"
+            exit 1
+          }
+
+      - name: Generate Windows project files
+        run: |
+          $projucerPath = "JUCE\extras\Projucer\Builds\VisualStudio2022\x64\Release\App\Projucer.exe"
+          if (Test-Path $projucerPath) {
+            & $projucerPath --resave sinT.jucer
+          } else {
+            Write-Error "Projucer executable not found at $projucerPath"
+            exit 1
+          }
+
+      - name: Build sinT
+        run: |
+          $solutionPath = "Builds\VisualStudio2022\sinT.sln"
+          if (Test-Path $solutionPath) {
+            msbuild $solutionPath -p:Configuration=Release -p:Platform=x64
+          } else {
+            Write-Error "Solution file not found at $solutionPath"
+            exit 1
+          }
+
+      - name: Install Inno Setup
+        run: |
+          $url = "https://jrsoftware.org/download.php/is.exe"
+          $output = "innosetup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $output
+          Start-Process -FilePath $output -ArgumentList "/SILENT" -Wait
+
+      - name: Create Inno Setup script
+        run: |
+          $VERSION = "${{ needs.check-merge-and-version.outputs.new_version }}"
+          $InnoScript = @"
+          [Setup]
+          AppName=sinT Digital Synthesizer
+          AppVersion=$VERSION
+          AppPublisher=AlbertoNR
+          DefaultDirName={autopf}\sinT
+          DefaultGroupName=sinT
+          OutputDir=.
+          OutputBaseFilename=sinT_${VERSION}_win_installer
+          Compression=lzma
+          SolidCompression=yes
+          
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+          
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Additional icons:"
+          
+          [Files]
+          Source: "Builds\VisualStudio2022\x64\Release\App\sinT.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "Builds\VisualStudio2022\x64\Release\VST3\sinT.vst3\*"; DestDir: "{commoncf64}\VST3\sinT.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs
+          
+          [Icons]
+          Name: "{group}\sinT"; Filename: "{app}\sinT.exe"
+          Name: "{autodesktop}\sinT"; Filename: "{app}\sinT.exe"; Tasks: desktopicon
+          
+          [Run]
+          Filename: "{app}\sinT.exe"; Description: "Launch sinT"; Flags: nowait postinstall skipifsilent
+          "@
+          
+          Set-Content -Path "sinT_installer.iss" -Value $InnoScript
+
+      - name: Build installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "sinT_installer.iss"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            sinT_*.exe
+
+  # Build for macOS
+  build-macos:
+    needs: [check-merge-and-version, update-version]
+    if: needs.check-merge-and-version.outputs.should_release == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download and setup JUCE
+        run: |
+          curl -L https://github.com/juce-framework/JUCE/archive/refs/tags/${{ env.JUCE_VERSION }}.tar.gz -o juce.tar.gz
+          tar -xzf juce.tar.gz
+          mv JUCE-${{ env.JUCE_VERSION }} JUCE
+
+      - name: Build Projucer
+        run: |
+          cd JUCE/extras/Projucer/Builds/MacOSX
+          xcodebuild -configuration Release
+
+      - name: Generate macOS project files
+        run: |
+          ./JUCE/extras/Projucer/Builds/MacOSX/build/Release/Projucer.app/Contents/MacOS/Projucer --resave sinT.jucer
+
+      - name: Build sinT for macOS
+        run: |
+          cd Builds/MacOSX
+          xcodebuild -configuration Release -arch x86_64 -arch arm64
+
+      - name: Create DMG
+        run: |
+          VERSION="${{ needs.check-merge-and-version.outputs.new_version }}"
+          mkdir -p dmg_contents
+          cp -R "Builds/MacOSX/build/Release/sinT.app" dmg_contents/
+          
+          # Create symlink to Applications
+          ln -s /Applications dmg_contents/Applications
+          
+          # Create DMG
+          hdiutil create -volname "sinT $VERSION" -srcfolder dmg_contents -ov -format UDZO "sinT_${VERSION}_macOS.dmg"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            sinT_*.dmg
+
+  # Create GitHub release
+  create-release:
+    needs: [check-merge-and-version, update-version, build-linux-x64, build-linux-arm, build-windows, build-macos]
+    if: needs.check-merge-and-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-merge-and-version.outputs.new_version }}
+          name: sinT v${{ needs.check-merge-and-version.outputs.new_version }}
+          draft: false
+          prerelease: false
+          body: |
+            ## sinT Digital Synthesizer v${{ needs.check-merge-and-version.outputs.new_version }}
+            
+            ### Changes
+            - Version bump: ${{ needs.check-merge-and-version.outputs.version_type }}
+            
+            ### Downloads
+            
+            **Linux:**
+            - Linux x64 standalone and kiosk mode packages (.deb)
+            - Raspberry Pi ARM standalone and kiosk mode packages (.deb)
+            
+            **Windows:**
+            - Windows installer with VST3 plugin (.exe)
+            
+            **macOS:**
+            - Universal binary for macOS Intel + Apple Silicon (.dmg)
+          files: |
+            artifacts/**/*
