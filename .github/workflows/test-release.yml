@@ -102,12 +102,13 @@ jobs:
           cd JUCE/extras/Projucer/Builds/LinuxMakefile
           make CONFIG=Release
 
-      - name: Configure Projucer Global Path
+      - name: Force Correct Module Paths
         run: |
-          mkdir -p ~/.config/Projucer
-          echo '<PROJUCER_SETTINGS juce_path="'"$GITHUB_WORKSPACE/JUCE"'" />' > ~/.config/Projucer/Projucer.settings
-          echo "Projucer settings file created:"
-          cat ~/.config/Projucer/Projucer.settings
+          echo ">>> Modifying jucer file to point to correct JUCE path..."
+          sed -i 's|juce_modules_path=".*"|juce_modules_path="'"$GITHUB_WORKSPACE/JUCE/modules"'"|g' sinT.jucer
+          
+          echo ">>> Jucer file content after modification:"
+          grep "juce_modules_path" sinT.jucer
 
       - name: Test project file generation
         run: |
