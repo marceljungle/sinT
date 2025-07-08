@@ -97,11 +97,21 @@ jobs:
           cd JUCE/extras/Projucer/Builds/LinuxMakefile
           make CONFIG=Release
 
+      - name: Build Projucer
+        run: |
+          cd JUCE/extras/Projucer/Builds/LinuxMakefile
+          make CONFIG=Release
+
+      - name: Configure Projucer Global Path
+        run: |
+          mkdir -p ~/.config/Projucer
+          echo '<PROJUCER_SETTINGS juce_path="'"$GITHUB_WORKSPACE/JUCE"'" />' > ~/.config/Projucer/Projucer.settings
+          echo "Projucer settings file created:"
+          cat ~/.config/Projucer/Projucer.settings
+
       - name: Test project file generation
         run: |
-          PROJUCER=./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer
-          $PROJUCER --set-global-JUCE-path "$GITHUB_WORKSPACE/JUCE"
-          $PROJUCER --resave sinT.jucer
+          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer
           echo "✅ Project files generated successfully"
 
       - name: Test build (compile only, no link)
