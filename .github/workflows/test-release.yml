@@ -97,22 +97,9 @@ jobs:
           cd JUCE/extras/Projucer/Builds/LinuxMakefile
           make CONFIG=Release
 
-      - name: Build Projucer
+      - name: Resave Project With Correct Path
         run: |
-          cd JUCE/extras/Projucer/Builds/LinuxMakefile
-          make CONFIG=Release
-
-      - name: Force Correct Module Paths
-        run: |
-          echo ">>> Modifying jucer file to point to correct JUCE path..."
-          sed -i 's|juce_modules_path=".*"|juce_modules_path="'"$GITHUB_WORKSPACE/JUCE/modules"'"|g' sinT.jucer
-          
-          echo ">>> Jucer file content after modification:"
-          grep "juce_modules_path" sinT.jucer
-
-      - name: Test project file generation
-        run: |
-          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer
+          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer --set-juce-path "$GITHUB_WORKSPACE/JUCE"
           echo "✅ Project files generated successfully"
 
       - name: Test build (compile only, no link)
