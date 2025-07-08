@@ -132,7 +132,9 @@ jobs:
 
       - name: Generate Linux project files
         run: |
-          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer
+          PROJUCER=./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer
+          $PROJUCER --set-global-search-path "$(pwd)/JUCE/modules"
+          $PROJUCER --resave sinT.jucer
 
       - name: Build standalone application
         run: |
@@ -257,7 +259,9 @@ jobs:
 
       - name: Generate Linux project files
         run: |
-          ./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer --resave sinT.jucer
+          PROJUCER=./JUCE/extras/Projucer/Builds/LinuxMakefile/build/Projucer
+          $PROJUCER --set-global-search-path "$(pwd)/JUCE/modules"
+          $PROJUCER --resave sinT.jucer
 
       - name: Build for ARM
         run: |
@@ -344,8 +348,9 @@ jobs:
 
       - name: Generate Windows project files
         run: |
-          $projucerPath = "JUCE\extras\Projucer\Builds\VisualStudio2022\x64\Release\App\Projucer.exe"
+          $projucerPath = ".\JUCE\extras\Projucer\Builds\VisualStudio2022\x64\Release\App\Projucer.exe"
           if (Test-Path $projucerPath) {
+            & $projucerPath --set-global-search-path ".\JUCE\modules"
             & $projucerPath --resave sinT.jucer
           } else {
             Write-Error "Projucer executable not found at $projucerPath"
@@ -439,7 +444,9 @@ jobs:
 
       - name: Generate macOS project files
         run: |
-          ./JUCE/extras/Projucer/Builds/MacOSX/build/Release/Projucer.app/Contents/MacOS/Projucer --resave sinT.jucer
+          PROJUCER=./JUCE/extras/Projucer/Builds/MacOSX/build/Release/Projucer.app/Contents/MacOS/Projucer
+          $PROJUCER --set-global-search-path "$(pwd)/JUCE/modules"
+          $PROJUCER --resave sinT.jucer
 
       - name: Build sinT for macOS
         run: |
